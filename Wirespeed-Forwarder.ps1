@@ -4,12 +4,12 @@
 param (
     [string]$UpstreamUrl = "https://upstream-server",  # Upstream server URL parameter
     [string]$Install,                           # Install parameter to embed a custom URL (required for install)
-    [switch]$DebugMode                          # Debug mode to send last 10 events individually with verbose output
+    [switch]$Debug                              # Debug mode to send last 10 events individually with verbose output
 )
 
-# If no parameters are provided, enable DebugMode
+# If no parameters are provided, run primary forwarding function (batch mode)
 if ($PSBoundParameters.Count -eq 0) {
-    $DebugMode = $true
+    $Debug = $false
 }
 
 # Check for admin privileges
@@ -64,7 +64,7 @@ if ($Install) {
         $winrmStatus = winrm qc /q 2>&1
         if ($LASTEXITCODE -ne 0) {
             Write-Log "Failed to enable WinRM: $winrmStatus" "ERROR"
-            throw "WinRM configuration failed. Ensure the WinRM service can start and port 5985 is available."
+            throw "WinRM configuration failed. Ensure the WinRM service can start and ports 5985/5986 are available."
         }
         Write-Log "WinRM enabled."
 
@@ -75,7 +75,6 @@ if ($Install) {
         }
         Write-Log "WEC service enabled."
 
-        # Replace net localgroup with PowerShell cmdlets
         $group = "Event Log Readers"
         $account = "NT AUTHORITY\Network Service"
         $isMember = Get-LocalGroupMember -Group $group -ErrorAction SilentlyContinue | Where-Object { $_.Name -eq $account }
@@ -86,11 +85,23 @@ if ($Install) {
             Write-Log "$account is already a member of $group."
         }
 
-        $firewallRule = Get-NetFirewallRule -Name "WinRM HTTP for WEF" -ErrorAction SilentlyContinue
-        if (-not $firewallRule) {
+        $firewallRuleHttp = Get-NetFirewallRule -Name "WinRM HTTP for WEF" -ErrorAction SilentlyContinue
+        if (-not $firewallRuleHttp) {
             New-NetFirewallRule -Name "WinRM HTTP for WEF" -DisplayName "WinRM HTTP for WEF" -Direction Inbound -Protocol TCP -LocalPort 5985 -Action Allow -ErrorAction Stop
         }
-        Write-Log "Firewall port 5985 opened."
+        $firewallRuleHttps = Get-NetFirewallRule -Name "WinRM HTTPS for WEF" -ErrorAction SilentlyContinue
+        if (-not $firewallRuleHttps) {
+            New-NetFirewallRule -Name "WinRM HTTPS for WEF" -DisplayName "WinRM HTTPS for WEF" -Direction Inbound -Protocol TCP -LocalPort 5986 -Action Allow -ErrorAction Stop
+        }
+        Write-Log "Firewall ports 5985 (HTTP) and 5986 (HTTPS) opened."
+
+        # Configure WEF to forward to itself
+        $regPath = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\EventLog\EventForwarding\SubscriptionManager"
+        if (-not (Test-Path $regPath)) {
+            New-Item -Path $regPath -Force | Out-Null
+        }
+        Set-ItemProperty -Path $regPath -Name "1" -Value "Server=http://localhost:5985/wsman/,Refresh=60" -Type String -Force
+        Write-Log "Configured WEF to forward events to localhost."
 
         $subscriptionName = "Security and PowerShell Events"
         $subscription = wecutil es | Where-Object { $_ -eq $subscriptionName }
@@ -99,7 +110,7 @@ if ($Install) {
 <Subscription xmlns="http://schemas.microsoft.com/2006/03/windows/events/subscription">
     <SubscriptionId>$subscriptionName</SubscriptionId>
     <SubscriptionType>SourceInitiated</SubscriptionType>
-    <Description>Collects security and PowerShell events</Description>
+    <Description>Collects security, PowerShell, system, and application events</Description>
     <Enabled>true</Enabled>
     <Uri>http://schemas.microsoft.com/wbem/wsman/1/windows/EventLog</Uri>
     <ConfigurationMode>Custom</ConfigurationMode>
@@ -119,6 +130,12 @@ if ($Install) {
                 </Query>
                 <Query Id="2" Path="Windows PowerShell">
                     <Select Path="Windows PowerShell">*</Select>
+                </Query>
+                <Query Id="3" Path="System">
+                    <Select Path="System">*</Select>
+                </Query>
+                <Query Id="4" Path="Application">
+                    <Select Path="Application">*</Select>
                 </Query>
             </QueryList>
         ]]>
@@ -142,18 +159,37 @@ if ($Install) {
             Write-Log "WEF subscription '$subscriptionName' created."
         }
 
+        # Simulate events for ForwardedEvents during install
+        if (-not (Test-Path "$installDir\test_events_generated.txt")) {
+            Write-Log "Simulating initial events for ForwardedEvents..."
+            $testUserName = "wef_test_$((New-Guid).Guid.Substring(0,8))"
+            $randomPassword = (New-Guid).Guid  # Random GUID as password
+            $password = ConvertTo-SecureString $randomPassword -AsPlainText -Force
+            New-LocalUser -Name $testUserName -Password $password -FullName "WEF Test User" -Description "Test user for WEF simulation" -ErrorAction Stop
+            Remove-LocalUser -Name $testUserName -ErrorAction Stop
+            Write-EventLog -LogName "Windows PowerShell" -Source "PowerShell" -EventId 999 -EntryType Information -Message "Simulated PowerShell event for WEF testing during install." -ErrorAction Stop
+            Start-Sleep -Seconds 5  # Wait for WEF to process
+            Set-Content -Path "$installDir\test_events_generated.txt" -Value (Get-Date).ToString()
+            Write-Log "Simulated events generated during install."
+        }
+
         # Install scheduled task during install
         $taskName = "Wirespeed-Forwarder"
         $task = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
-        if (-not $task) {
-            $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$scriptPath`" -UpstreamUrl `"$Install`""
-            $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 1) -RepetitionDuration (New-TimeSpan -Days 9999)
-            $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
-            Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -Description "Forwards WEC events to upstream server" -RunLevel Highest -ErrorAction Stop
-            Write-Log "Scheduled task '$taskName' created to run every minute."
-            Start-ScheduledTask -TaskName $taskName -ErrorAction Stop
-            Write-Log "Scheduled task '$taskName' started."
+        if ($task) {
+            Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction Stop
+            Write-Log "Existing scheduled task '$taskName' deleted."
         }
+        
+        $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$scriptPath`""
+        $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 1) -RepetitionDuration (New-TimeSpan -Days 9999)
+        $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
+        $principal = New-ScheduledTaskPrincipal -UserId "NT AUTHORITY\SYSTEM" -LogonType ServiceAccount -RunLevel Highest
+        Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -Principal $principal -Description "Forwards WEC events to upstream server" -ErrorAction Stop
+        Write-Log "Scheduled task '$taskName' created to run every minute as SYSTEM."
+        Start-ScheduledTask -TaskName $taskName -ErrorAction Stop
+        Write-Log "Scheduled task '$taskName' started."
+        
         Write-Log "Installation completed successfully."
         exit 0
     }
@@ -198,34 +234,27 @@ if ($Install) {
 # Configuration
 $credential = $null  # Optional: Set to [PSCredential], e.g., New-Object PSCredential("username", (ConvertTo-SecureString "password" -AsPlainText -Force))
 
-# Generate robust test events using PowerShell cmdlets (run once after subscription setup, only if not installing)
-if (-not $Install -and -not (Test-Path "$installDir\test_events_generated.txt")) {
-    try {
-        Write-Log "Generating test events..."
-        $testUserName = "wirespeed_testuser_$((New-Guid).Guid.Substring(0,8))"
-        $password = ConvertTo-SecureString "P@ssw0rd123!" -AsPlainText -Force
-        New-LocalUser -Name $testUserName -Password $password -FullName "Wirespeed Test User" -Description "Temporary user for Wirespeed testing" -ErrorAction Stop
-        Remove-LocalUser -Name $testUserName -ErrorAction Stop
-        IEX "Write-Host 'Test script block for Wirespeed'"
-        Set-Content -Path "$installDir\test_events_generated.txt" -Value (Get-Date).ToString()
-        Write-Log "Test events generated."
-    }
-    catch {
-        Write-Log "Failed to generate test events: $($_.Exception.Message)" "WARNING"
-    }
-}
-
 # Main event forwarding (only if not installing)
 if (-not $Install) {
     try {
         Write-Log "Starting event forwarding to $UpstreamUrl"
 
-        if ($DebugMode) {
+        if ($Debug) {
+            # Simulate events in debug mode
+            Write-Log "Simulating test events for ForwardedEvents in debug mode..."
+            $testUserName = "wef_test_$((New-Guid).Guid.Substring(0,8))"
+            $randomPassword = (New-Guid).Guid  # Random GUID as password
+            $password = ConvertTo-SecureString $randomPassword -AsPlainText -Force
+            New-LocalUser -Name $testUserName -Password $password -FullName "WEF Test User" -Description "Test user for WEF debug simulation" -ErrorAction Stop
+            Remove-LocalUser -Name $testUserName -ErrorAction Stop
+            Write-EventLog -LogName "Windows PowerShell" -Source "PowerShell" -EventId 999 -EntryType Information -Message "Simulated PowerShell event for WEF debug testing." -ErrorAction Stop
+            Start-Sleep -Seconds 5  # Wait for WEF to process
+
             $events = Get-WinEvent -LogName "ForwardedEvents" -ErrorAction SilentlyContinue | 
                       Select-Object -First 10
             
             if ($events.Count -eq 0) {
-                Write-Log "No events available for debug mode." "WARNING"
+                Write-Log "No events available for debug mode after simulation." "WARNING"
                 Write-Host "No events available in 'ForwardedEvents' for debug mode."
                 exit 0
             }
@@ -271,7 +300,7 @@ if (-not $Install) {
             exit 0
         }
 
-        # Normal mode: Batch forwarding
+        # Normal mode: Batch forwarding (default when no params)
         $stateFile = Join-Path $installDir "last_event_time.txt"
         $lastTime = if (Test-Path $stateFile) { Get-Content $stateFile | Get-Date -ErrorAction SilentlyContinue } else { (Get-Date).AddHours(-72) }
         
