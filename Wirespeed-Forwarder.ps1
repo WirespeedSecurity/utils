@@ -50,13 +50,12 @@ function Write-Log {
 # Self-install only if -Install is provided
 if ($Install) {
     try {
-        if (-not (Test-Path $installDir)) {
-            New-Item -Path $installDir -ItemType Directory -Force
-        }
+        # Always overwrite the script file in the install directory
+        New-Item -Path $installDir -ItemType Directory -Force | Out-Null  # Ensure directory exists
         $scriptContent = Get-Content -Path $PSCommandPath -Raw
         $updatedContent = $scriptContent -replace '\[string\]\$UpstreamUrl = "https://upstream-server"', "[string]`$UpstreamUrl = `"$Install`""
         Set-Content -Path $scriptPath -Value $updatedContent -Force
-        Write-Log "Script updated with custom URL '$Install' and installed to $scriptPath"
+        Write-Log "Script overwritten with custom URL '$Install' at $scriptPath"
         
         # Configure WEC Server during install
         Write-Log "Configuring WEC server..."
@@ -254,9 +253,24 @@ if (-not $Install) {
                       Select-Object -First 10
             
             if ($events.Count -eq 0) {
-                Write-Log "No events available for debug mode after simulation." "WARNING"
-                Write-Host "No events available in 'ForwardedEvents' for debug mode."
-                exit 0
+                Write-Log "No events available in ForwardedEvents for debug mode after simulation." "WARNING"
+                Write-Host "No events available in 'ForwardedEvents'."
+                $response = Read-Host "Would you like to send the last 10 Security events instead to test connectivity? (Y/N)"
+                if ($response -eq "Y" -or $response -eq "y") {
+                    $events = Get-WinEvent -LogName "Security" -ErrorAction Stop | 
+                              Select-Object -First 10
+                    if ($events.Count -eq 0) {
+                        Write-Log "No Security events available to send." "ERROR"
+                        Write-Host "No Security events available to send. Exiting."
+                        exit 1
+                    }
+                    Write-Log "User opted to send last 10 Security events for connectivity test."
+                    Write-Host "Sending last 10 Security events instead."
+                } else {
+                    Write-Log "User declined to send Security events. Exiting debug mode."
+                    Write-Host "Exiting debug mode."
+                    exit 0
+                }
             }
 
             foreach ($event in $events) {
