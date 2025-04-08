@@ -29,7 +29,7 @@ try {
             try {
                 $jsonObject = $body | ConvertFrom-Json
                 $prettyJson = $jsonObject | ConvertTo-Json -Depth 10
-                Write-Host "Received POST body (pretty-printed):"
+                Write-Host "Received POST body:"
                 Write-Host $prettyJson
             }
             catch {

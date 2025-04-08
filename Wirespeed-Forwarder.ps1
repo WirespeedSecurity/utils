@@ -7,6 +7,9 @@ param (
     [switch]$Debug                              # Debug mode to send last 10 events individually with verbose output
 )
 
+# Bypass SSL/TLS certificate validation for self-signed certificates
+[System.Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }
+
 # If no parameters are provided, run primary forwarding function (batch mode)
 if ($PSBoundParameters.Count -eq 0) {
     $Debug = $false

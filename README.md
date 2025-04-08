@@ -6,5 +6,5 @@ For organizations with a legacy on-premises only Active Directory (no integratio
 
 ### Wirespeed Forwarder
 
-For organizations wishing to collect Windows telemetry from on-premises endpoints or private cloud VMs, this utility is an option to forward telemetry captured by Windows Event Forwarders (WEF) and Windows Event Collectors (WEC) to Wirespeed.
+For organizations wishing to collect Windows telemetry from on-premises endpoints or private cloud VMs, this utility is an option to forward telemetry captured by Windows Event Forwarders (WEF) and Windows Event Collectors (WEC) to Wi
 
