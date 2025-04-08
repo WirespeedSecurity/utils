@@ -12,6 +12,23 @@ if ($PSBoundParameters.Count -eq 0) {
     $Debug = $false
 }
 
+Add-Type @"
+using System.Net;
+using System.Security.Cryptography.X509Certificates;
+
+public class TrustAllCertsPolicy {
+    public static bool IgnoreCertificateErrors(
+        Object sender,
+        X509Certificate certificate,
+        X509Chain chain,
+        SslPolicyErrors sslPolicyErrors) {
+            return true;
+        }
+}
+"@
+
+[System.Net.ServicePointManager]::ServerCertificateValidationCallback = [TrustAllCertsPolicy]::IgnoreCertificateErrors
+
 # Check for admin privileges
 if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     Write-Error "This script must be run as an administrator. Exiting."
