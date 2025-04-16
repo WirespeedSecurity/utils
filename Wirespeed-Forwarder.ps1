@@ -282,7 +282,13 @@ if (-not $Install) {
                 # Map properties to their names and types
                 $properties = @{}
                 for ($i = 0; $i -lt $event.Properties.Count; $i++) {
-                    $propName = if ($eventData -and $i -lt $eventData.Count) { $eventData[$i].Name } else { "Property$i" }
+                    # Check if $eventData exists, is not empty, and has an element at index $i
+                    $propName = if ($eventData -and $eventData.Count -gt $i -and $null -ne $eventData[$i].Name) {
+                        $eventData[$i].Name
+                    } else {
+                        Write-Log "Using fallback name 'Property$i' for event ID $($event.Id) due to missing or invalid EventData." "WARNING"
+                        "Property$i"
+                    }
                     $propValue = $event.Properties[$i].Value
                     $propType = if ($null -eq $propValue) { "Null" } else { $propValue.GetType().Name }
                     $properties[$propName] = [PSCustomObject]@{
@@ -353,7 +359,13 @@ if (-not $Install) {
             # Map properties to their names and types
             $properties = @{}
             for ($i = 0; $i -lt $_.Properties.Count; $i++) {
-                $propName = if ($eventData -and $i -lt $eventData.Count) { $eventData[$i].Name } else { "Property$i" }
+                # Check if $eventData exists, is not empty, and has an element at index $i
+                $propName = if ($eventData -and $eventData.Count -gt $i -and $null -ne $eventData[$i].Name) {
+                    $eventData[$i].Name
+                } else {
+                    Write-Log "Using fallback name 'Property$i' for event ID $($_.Id) due to missing or invalid EventData." "WARNING"
+                    "Property$i"
+                }
                 $propValue = $_.Properties[$i].Value
                 $propType = if ($null -eq $propValue) { "Null" } else { $propValue.GetType().Name }
                 $properties[$propName] = [PSCustomObject]@{
