@@ -1,6 +1,8 @@
 # Wirespeed-Forwarder.ps1
 # Minimum supported version: Windows Server 2016 with PowerShell 5.1
 
+$scriptVersion = "1.0.1"
+
 param (
     [string]$UpstreamUrl = "https://upstream-server",  # Upstream server URL parameter
     [string]$Install,                           # Install parameter to embed a custom URL (required for install)
@@ -25,6 +27,7 @@ $scriptPath = Join-Path $installDir $scriptName
 $logPath = Join-Path $installDir "wirespeed-forwarder.log"
 $maxLogSize = 10MB  # Max log size before rotation
 $batchSize = 100    # Configurable batch size for event forwarding
+$registrationStateFile = Join-Path $installDir "wirespeed-registration.txt"
 
 # Logging function with rotation (limited to 1 .bak file)
 function Write-Log {
@@ -45,6 +48,161 @@ function Write-Log {
         }
     }
     Add-Content -Path $logPath -Value $logEntry -ErrorAction SilentlyContinue
+}
+
+# Function to generate and send Wirespeed Registration event
+function Generate-WirespeedRegistrationEvent {
+    # Get current UTC time
+    $timestamp = (Get-Date).ToUniversalTime().ToString("o")
+
+    # Get hostname
+    $hostname = $env:COMPUTERNAME
+
+    # Get Active Directory domain name
+    try {
+        $adDomain = (Get-WmiObject -Class Win32_ComputerSystem -ErrorAction Stop).Domain
+    }
+    catch {
+        $adDomain = "N/A"
+        Write-Log "Failed to retrieve AD domain: $($_.Exception.Message)" "WARNING"
+    }
+
+    # Get internal IP address (first non-loopback IPv4 address)
+    try {
+        $ipAddress = (Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.IPAddress -notlike "127.*" } | Select-Object -First 1).IPAddress
+        if (-not $ipAddress) { $ipAddress = "N/A" }
+    }
+    catch {
+        $ipAddress = "N/A"
+        Write-Log "Failed to retrieve IP address: $($_.Exception.Message)" "WARNING"
+    }
+
+    # Get hardware information (CPU, RAM, Disk)
+    try {
+        $cpu = (Get-WmiObject -Class Win32_Processor -ErrorAction Stop | Select-Object -First 1).Name
+    }
+    catch {
+        $cpu = "N/A"
+        Write-Log "Failed to retrieve CPU info: $($_.Exception.Message)" "WARNING"
+    }
+
+    try {
+        $ramGB = [math]::Round((Get-WmiObject -Class Win32_ComputerSystem -ErrorAction Stop).TotalPhysicalMemory / 1GB, 2)
+    }
+    catch {
+        $ramGB = "N/A"
+        Write-Log "Failed to retrieve RAM info: $($_.Exception.Message)" "WARNING"
+    }
+
+    try {
+        $disks = Get-WmiObject -Class Win32_LogicalDisk -Filter "DriveType=3" -ErrorAction Stop
+        $diskInfo = $disks | ForEach-Object {
+            "$($_.DeviceID) $([math]::Round($_.Size / 1GB, 2))GB (Free: $([math]::Round($_.FreeSpace / 1GB, 2))GB)"
+        } | Join-String -Separator ", "
+        if (-not $diskInfo) { $diskInfo = "N/A" }
+    }
+    catch {
+        $diskInfo = "N/A"
+        Write-Log "Failed to retrieve disk info: $($_.Exception.Message)" "WARNING"
+    }
+
+    # Get Windows OS release name and build
+    try {
+        $os = Get-WmiObject -Class Win32_OperatingSystem -ErrorAction Stop
+        $osName = $os.Caption
+        $osBuild = $os.BuildNumber
+        $osVersion = [System.Environment]::OSVersion.Version.ToString()
+    }
+    catch {
+        $osName = "N/A"
+        $osBuild = "N/A"
+        $osVersion = "N/A"
+        Write-Log "Failed to retrieve OS info: $($_.Exception.Message)" "WARNING"
+    }
+
+    # Get time zone information
+    try {
+        $timeZone = (Get-TimeZone -ErrorAction Stop).Id
+    }
+    catch {
+        $timeZone = "N/A"
+        Write-Log "Failed to retrieve time zone: $($_.Exception.Message)" "WARNING"
+    }
+
+    # Check WEC service status
+    try {
+        $wecService = Get-Service -Name "Wecsvc" -ErrorAction Stop
+        $wecStatus = if ($wecService.Status -eq "Running") { "Running" } else { "Not Running ($($wecService.Status))" }
+    }
+    catch {
+        $wecStatus = "N/A"
+        Write-Log "Failed to retrieve WEC service status: $($_.Exception.Message)" "WARNING"
+    }
+
+    # Check WinRM service status
+    try {
+        $winrmService = Get-Service -Name "WinRM" -ErrorAction Stop
+        $winrmStatus = if ($winrmService.Status -eq "Running") { "Running" } else { "Not Running ($($winrmService.Status))" }
+    }
+    catch {
+        $winrmStatus = "N/A"
+        Write-Log "Failed to retrieve WinRM service status: $($_.Exception.Message)" "WARNING"
+    }
+
+    # Check scheduled task health
+    try {
+        $taskName = "Wirespeed-Forwarder"
+        $task = Get-ScheduledTask -TaskName $taskName -ErrorAction Stop
+        $taskHealthy = if ($task -and $task.State -eq "Ready") { "Healthy (Present, Enabled)" } else { "Unhealthy (Not present or disabled)" }
+    }
+    catch {
+        $taskHealthy = "N/A"
+        Write-Log "Failed to retrieve scheduled task status: $($_.Exception.Message)" "WARNING"
+    }
+
+    # Construct the registration event
+    $registrationEvent = [PSCustomObject]@{
+        Title = "Wirespeed Registration"
+        Version = $scriptVersion
+        Timestamp = $timestamp
+        Hostname = $hostname
+        ADDomain = $adDomain
+        IPAddress = $ipAddress
+        Hardware = [PSCustomObject]@{
+            CPU = $cpu
+            RAM_GB = $ramGB
+            Disks = $diskInfo
+        }
+        OperatingSystem = [PSCustomObject]@{
+            Name = $osName
+            Build = $osBuild
+            Version = $osVersion
+        }
+        TimeZone = $timeZone
+        WECStatus = $wecStatus
+        WinRMStatus = $winrmStatus
+        ScheduledTaskStatus = $taskHealthy
+    } | ConvertTo-Json -Compress -Depth 4
+
+    # Send the registration event
+    try {
+        $params = @{
+            Uri = $UpstreamUrl
+            Method = "Post"
+            Body = $registrationEvent
+            ContentType = "application/json"
+            ErrorAction = "Stop"
+            UseBasicParsing = $true
+        }
+        if ($credential) {
+            $params["Credential"] = $credential
+        }
+        $response = Invoke-WebRequest @params
+        Write-Log "Sent Wirespeed Registration event to ${UpstreamUrl}. Status: $($response.StatusCode)"
+    }
+    catch {
+        Write-Log "Failed to send Wirespeed Registration event to ${UpstreamUrl}: $($_.Exception.Message)" "ERROR"
+    }
 }
 
 # Self-install only if -Install is provided
@@ -238,6 +396,23 @@ $credential = $null  # Optional: Set to [PSCredential], e.g., New-Object PSCrede
 if (-not $Install) {
     try {
         Write-Log "Starting event forwarding to $UpstreamUrl"
+
+        # Check if it's time to send a registration event (every 24 hours)
+        $sendRegistration = $false
+        $lastRegistration = if (Test-Path $registrationStateFile) {
+            Get-Content $registrationStateFile | Get-Date -ErrorAction SilentlyContinue
+        } else {
+            $null
+        }
+        $currentTime = Get-Date
+        if (-not $lastRegistration -or ($currentTime - $lastRegistration).TotalHours -ge 24) {
+            $sendRegistration = $true
+            $currentTime | Out-File $registrationStateFile -Force
+        }
+
+        if ($sendRegistration -and $UpstreamUrl -ne "https://upstream-server") {
+            Generate-WirespeedRegistrationEvent
+        }
 
         if ($Debug) {
             # Simulate events in debug mode
