@@ -275,13 +275,29 @@ if (-not $Install) {
             }
 
             foreach ($event in $events) {
+                # Get event XML to extract property names
+                $eventXml = [xml]$event.ToXml()
+                $eventData = $eventXml.Event.EventData.Data
+
+                # Map properties to their names and types
+                $properties = @{}
+                for ($i = 0; $i -lt $event.Properties.Count; $i++) {
+                    $propName = if ($eventData -and $i -lt $eventData.Count) { $eventData[$i].Name } else { "Property$i" }
+                    $propValue = $event.Properties[$i].Value
+                    $propType = if ($null -eq $propValue) { "Null" } else { $propValue.GetType().Name }
+                    $properties[$propName] = [PSCustomObject]@{
+                        Value = $propValue
+                        Type = $propType
+                    }
+                }
+
                 $jsonEvent = [PSCustomObject]@{
                     TimeCreated = $event.TimeCreated.ToString("o")
                     Id = $event.Id
                     ProviderName = $event.ProviderName
                     Message = $event.Message
-                    Properties = $event.Properties | ForEach-Object { $_.Value }
-                } | ConvertTo-Json -Compress
+                    Properties = $properties
+                } | ConvertTo-Json -Compress -Depth 4
 
                 Write-Host "Sending event ID $($event.Id) to $UpstreamUrl"
                 Write-Host "JSON Payload: $jsonEvent"
@@ -330,14 +346,30 @@ if (-not $Install) {
         }
 
         $jsonEvents = $events | ForEach-Object {
+            # Get event XML to extract property names
+            $eventXml = [xml]$_.ToXml()
+            $eventData = $eventXml.Event.EventData.Data
+
+            # Map properties to their names and types
+            $properties = @{}
+            for ($i = 0; $i -lt $_.Properties.Count; $i++) {
+                $propName = if ($eventData -and $i -lt $eventData.Count) { $eventData[$i].Name } else { "Property$i" }
+                $propValue = $_.Properties[$i].Value
+                $propType = if ($null -eq $propValue) { "Null" } else { $propValue.GetType().Name }
+                $properties[$propName] = [PSCustomObject]@{
+                    Value = $propValue
+                    Type = $propType
+                }
+            }
+
             [PSCustomObject]@{
                 TimeCreated = $_.TimeCreated.ToString("o")
                 Id = $_.Id
                 ProviderName = $_.ProviderName
                 Message = $_.Message
-                Properties = $_.Properties | ForEach-Object { $_.Value }
+                Properties = $properties
             }
-        } | ConvertTo-Json -Compress
+        } | ConvertTo-Json -Compress -Depth 4
 
         $params = @{
             Uri = $UpstreamUrl
