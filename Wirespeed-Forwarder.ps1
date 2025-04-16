@@ -7,30 +7,10 @@ param (
     [switch]$Debug                              # Debug mode to send last 10 events individually with verbose output
 )
 
-# Bypass SSL/TLS certificate validation for self-signed certificates
-[System.Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }
-
 # If no parameters are provided, run primary forwarding function (batch mode)
 if ($PSBoundParameters.Count -eq 0) {
     $Debug = $false
 }
-
-Add-Type @"
-using System.Net;
-using System.Security.Cryptography.X509Certificates;
-
-public class TrustAllCertsPolicy {
-    public static bool IgnoreCertificateErrors(
-        Object sender,
-        X509Certificate certificate,
-        X509Chain chain,
-        SslPolicyErrors sslPolicyErrors) {
-            return true;
-        }
-}
-"@
-
-[System.Net.ServicePointManager]::ServerCertificateValidationCallback = [TrustAllCertsPolicy]::IgnoreCertificateErrors
 
 # Check for admin privileges
 if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
