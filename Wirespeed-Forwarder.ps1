@@ -214,6 +214,7 @@ if ($Install) {
                     Body = $errorEvent
                     ContentType = "application/json"
                     ErrorAction = "Stop"
+                    UseBasicParsing = $true  # Add this for error handling and parsing
                 }
                 if ($credential) {
                     $params["Credential"] = $credential
@@ -293,6 +294,7 @@ if (-not $Install) {
                     ContentType = "application/json"
                     ErrorAction = "Stop"
                     Verbose = $true
+                    UseBasicParsing = $true  # Add this for error handling and parsing
                 }
                 if ($credential) {
                     $params["Credential"] = $credential
@@ -343,6 +345,7 @@ if (-not $Install) {
             Body = $jsonEvents
             ContentType = "application/json"
             ErrorAction = "Stop"
+            UseBasicParsing = $true  # Add this for error handling and parsing
         }
         if ($credential) {
             $params["Credential"] = $credential
@@ -374,6 +377,7 @@ if (-not $Install) {
                     Body = $errorEvent
                     ContentType = "application/json"
                     ErrorAction = "Stop"
+                    UseBasicParsing = $true  # Add this for error handling and parsing
                 }
                 if ($credential) {
                     $params["Credential"] = $credential
